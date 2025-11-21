@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>爆款象棋 MVP - 极致手感版</title>
+    <style>
+        body { margin: 0; padding: 0; background: #1a1a1a; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; }
+        #game-container { box-shadow: 0 0 50px rgba(0,0,0,0.8); border-radius: 8px; overflow: hidden; }
+        .ui-layer { position: absolute; top: 20px; color: #fff; text-align: center; width: 100%; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
+        h1 { margin: 0; font-size: 24px; letter-spacing: 2px; }
+        p { font-size: 14px; color: #aaa; }
+    </style>
+    <!-- 引入 Pixi.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <!-- 引入 GSAP 用于丝滑动画 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+</head>
+<body>
+    <div class="ui-layer">
+        <h1>XIANGQI · 爆款原型</h1>
+        <p>点击棋子移动 | 体验震动与粒子特效</p>
+    </div>
+    <div id="game-container"></div>
+    <script src="game.js"></script>
+</body>
+</html>
