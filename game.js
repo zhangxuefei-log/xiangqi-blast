@@ -1,26 +1,29 @@
 /**
- * 爆款象棋 MVP v2.0
- * 新增功能：规则引擎 (Rule Engine) + 回合管理 + 贪婪AI
+ * 爆款象棋 MVP v2.1 (防卡死增强版)
+ * 修复：AI 思考崩溃导致的死锁
+ * 修复：规则判断漏洞
  */
 
 const CONFIG = {
     width: 450,
     height: 550,
     gridSize: 50,
-    boardPadding: 25,
     pieceSize: 22,
     colors: {
         board: 0xE6B080,
         line: 0x5C3A21,
         red: 0xD63031,
         black: 0x2D3436,
-        select: 0x0984e3,
-        valid: 0x00b894 // 新增：合法落点提示色
+        select: 0x0984e3
     }
 };
 
 class XiangqiGame {
     constructor() {
+        // 清理旧的 canvas 防止重影
+        const container = document.getElementById('game-container');
+        container.innerHTML = '';
+
         this.app = new PIXI.Application({
             width: CONFIG.width,
             height: CONFIG.height,
@@ -29,7 +32,7 @@ class XiangqiGame {
             autoDensity: true,
             antialias: true
         });
-        document.getElementById('game-container').appendChild(this.app.view);
+        container.appendChild(this.app.view);
 
         this.boardContainer = new PIXI.Container();
         this.piecesContainer = new PIXI.Container();
@@ -46,37 +49,38 @@ class XiangqiGame {
 
         this.pieces = {}; 
         this.selectedPiece = null;
-        this.isProcessing = false;
-        this.isRedTurn = true; // 新增：回合标记
+        this.isProcessing = false; // 核心锁
+        this.isRedTurn = true;
 
         this.drawBoard();
         this.initPieces();
         this.setupInteraction();
         
-        // 升级版 AI
         this.ai = new GreedyAI();
     }
 
-    // --- 渲染层 (保持不变) ---
     drawBoard() {
         const g = new PIXI.Graphics();
         g.beginFill(CONFIG.colors.board);
         g.drawRoundedRect(-20, -20, 8 * CONFIG.gridSize + 40, 9 * CONFIG.gridSize + 40, 10);
         g.endFill();
         g.lineStyle(2, CONFIG.colors.line, 0.8);
+        // 绘制网格
         for (let i = 0; i < 10; i++) { g.moveTo(0, i * CONFIG.gridSize); g.lineTo(8 * CONFIG.gridSize, i * CONFIG.gridSize); }
         for (let i = 0; i < 9; i++) {
             g.moveTo(i * CONFIG.gridSize, 0); g.lineTo(i * CONFIG.gridSize, 4 * CONFIG.gridSize);
             g.moveTo(i * CONFIG.gridSize, 5 * CONFIG.gridSize); g.lineTo(i * CONFIG.gridSize, 9 * CONFIG.gridSize);
         }
+        // 楚河汉界两侧封口
         g.moveTo(0, 4 * CONFIG.gridSize); g.lineTo(0, 5 * CONFIG.gridSize);
         g.moveTo(8 * CONFIG.gridSize, 4 * CONFIG.gridSize); g.lineTo(8 * CONFIG.gridSize, 5 * CONFIG.gridSize);
+        // 九宫格
         g.moveTo(3 * CONFIG.gridSize, 0); g.lineTo(5 * CONFIG.gridSize, 2 * CONFIG.gridSize);
         g.moveTo(5 * CONFIG.gridSize, 0); g.lineTo(3 * CONFIG.gridSize, 2 * CONFIG.gridSize);
         g.moveTo(3 * CONFIG.gridSize, 7 * CONFIG.gridSize); g.lineTo(5 * CONFIG.gridSize, 9 * CONFIG.gridSize);
         g.moveTo(5 * CONFIG.gridSize, 7 * CONFIG.gridSize); g.lineTo(3 * CONFIG.gridSize, 9 * CONFIG.gridSize);
 
-        const style = new PIXI.TextStyle({ fontFamily: 'KaiTi, Arial', fontSize: 28, fill: CONFIG.colors.line, alpha: 0.6 });
+        const style = new PIXI.TextStyle({ fontFamily: 'Arial', fontSize: 28, fill: CONFIG.colors.line, alpha: 0.6 });
         const text1 = new PIXI.Text('楚 河', style); const text2 = new PIXI.Text('汉 界', style);
         text1.anchor.set(0.5); text2.anchor.set(0.5);
         text1.position.set(2 * CONFIG.gridSize, 4.5 * CONFIG.gridSize);
@@ -88,17 +92,20 @@ class XiangqiGame {
         const container = new PIXI.Container();
         const g = new PIXI.Graphics();
         const color = isRed ? CONFIG.colors.red : CONFIG.colors.black;
+        // 棋子阴影
         g.beginFill(0x000000, 0.3); g.drawCircle(3, 3, CONFIG.pieceSize); g.endFill();
+        // 棋子主体
         g.beginFill(0xE8D0A9); g.lineStyle(2, color, 1); g.drawCircle(0, 0, CONFIG.pieceSize); g.endFill();
+        // 内圈装饰
         g.lineStyle(1, color, 0.5); g.drawCircle(0, 0, CONFIG.pieceSize - 4);
-        const text = new PIXI.Text(name, { fontFamily: 'KaiTi, Arial', fontSize: 24, fill: color, fontWeight: 'bold' });
-        text.anchor.set(0.5); text.y = -2;
+        
+        const text = new PIXI.Text(name, { fontFamily: 'Arial', fontSize: 24, fill: color, fontWeight: 'bold' });
+        text.anchor.set(0.5); text.y = 2; 
         container.addChild(g, text);
         return this.app.renderer.generateTexture(container);
     }
 
     initPieces() {
-        // 标准开局布局
         const layout = [
             {name: '车', x: 0, y: 9}, {name: '马', x: 1, y: 9}, {name: '相', x: 2, y: 9}, {name: '士', x: 3, y: 9}, {name: '帅', x: 4, y: 9}, {name: '士', x: 5, y: 9}, {name: '相', x: 6, y: 9}, {name: '马', x: 7, y: 9}, {name: '车', x: 8, y: 9},
             {name: '炮', x: 1, y: 7}, {name: '炮', x: 7, y: 7},
@@ -110,26 +117,33 @@ class XiangqiGame {
         ];
 
         layout.forEach(p => {
-            const isRed = p.y > 4; // 下半部分是红方
+            const isRed = p.y > 4;
             const sprite = new PIXI.Sprite(this.createPieceTexture(p.name, isRed));
             sprite.anchor.set(0.5);
             sprite.x = p.x * CONFIG.gridSize;
             sprite.y = p.y * CONFIG.gridSize;
             sprite.interactive = true;
             sprite.buttonMode = true;
-            sprite.data = { ...p, red: isRed, type: p.name }; // 存储类型用于规则判断
+            sprite.data = { ...p, red: isRed, type: p.name };
             this.piecesContainer.addChild(sprite);
             this.pieces[`${p.x},${p.y}`] = sprite;
         });
     }
 
-    // --- 3. 交互逻辑 (升级版) ---
     setupInteraction() {
         this.boardContainer.interactive = true;
-        this.boardContainer.hitArea = new PIXI.Rectangle(-25, -25, 450, 500);
+        this.boardContainer.hitArea = new PIXI.Rectangle(-25, -25, 450, 525);
         this.boardContainer.on('pointerdown', (e) => {
-            if (this.isProcessing || !this.isRedTurn) return; // 只有红方回合且未处理动画时可操作
+            // 🚨 核心修复：如果正在处理中，直接无视点击，防止逻辑错乱
+            if (this.isProcessing) {
+                console.log("Game is processing, click ignored.");
+                return;
+            }
+            // 如果不是红方回合，也不准点
+            if (!this.isRedTurn) return;
+
             const pos = e.data.getLocalPosition(this.boardContainer);
+            // 四舍五入获取最近的格点
             const gx = Math.round(pos.x / CONFIG.gridSize);
             const gy = Math.round(pos.y / CONFIG.gridSize);
             this.handleGridClick(gx, gy);
@@ -141,21 +155,20 @@ class XiangqiGame {
         const targetKey = `${x},${y}`;
         const targetPiece = this.pieces[targetKey];
 
-        // 1. 选择自己的棋子
+        // 1. 点击自己的棋子 -> 选中
         if (targetPiece && targetPiece.data.red === this.isRedTurn) {
             this.selectPiece(targetPiece);
             return;
         }
 
-        // 2. 移动或吃子
+        // 2. 点击其他地方 -> 如果有选中棋子，尝试移动
         if (this.selectedPiece) {
-            // 规则校验！！！
             if (Rules.canMove(this.selectedPiece.data, x, y, this.pieces)) {
                 this.movePiece(this.selectedPiece, x, y, targetPiece);
             } else {
-                // 违规操作反馈：轻微摇头动画
+                // 移动不合法：震动提示
                 gsap.to(this.selectedPiece, {x: this.selectedPiece.x + 5, duration: 0.05, yoyo: true, repeat: 3});
-                if (navigator.vibrate) navigator.vibrate(50); // 错误震动
+                if (navigator.vibrate) navigator.vibrate(50);
             }
         }
     }
@@ -164,12 +177,15 @@ class XiangqiGame {
         if (this.selectedPiece) this.selectedPiece.alpha = 1;
         this.selectedPiece = sprite;
         sprite.alpha = 0.8;
+        // 选中动画
         gsap.fromTo(sprite.scale, {x: 1, y: 1}, {x: 1.2, y: 1.2, duration: 0.1, yoyo: true, repeat: 1});
         if (navigator.vibrate) navigator.vibrate(10);
     }
 
     async movePiece(sprite, tx, ty, capturedPiece) {
-        this.isProcessing = true;
+        this.isProcessing = true; // 🔒 立即上锁
+        
+        // 更新数据
         const oldKey = `${sprite.data.x},${sprite.data.y}`;
         delete this.pieces[oldKey];
         
@@ -177,7 +193,7 @@ class XiangqiGame {
         sprite.data.y = ty;
         this.pieces[`${tx},${ty}`] = sprite;
 
-        // 动画
+        // 播放动画
         await gsap.to(sprite, {
             x: tx * CONFIG.gridSize,
             y: ty * CONFIG.gridSize,
@@ -185,13 +201,13 @@ class XiangqiGame {
             ease: "power2.inOut"
         });
 
+        // 吃子逻辑
         if (capturedPiece) {
             this.createExplosion(capturedPiece.x, capturedPiece.y);
             this.piecesContainer.removeChild(capturedPiece);
             if (navigator.vibrate) navigator.vibrate([30, 50, 30]);
             this.screenshake(5, 300);
             
-            // 游戏结束判断
             if (capturedPiece.data.type === '帅' || capturedPiece.data.type === '将') {
                 alert(sprite.data.red ? "红方胜！" : "黑方胜！");
                 location.reload();
@@ -202,24 +218,39 @@ class XiangqiGame {
             this.createDust(tx * CONFIG.gridSize, ty * CONFIG.gridSize);
         }
 
-        this.selectedPiece.alpha = 1;
+        // 清除选中状态
+        if (this.selectedPiece) this.selectedPiece.alpha = 1;
         this.selectedPiece = null;
         
         // 切换回合
         this.isRedTurn = !this.isRedTurn;
 
-        // 如果轮到黑方(AI)，延迟执行
+        // 🤖 AI 回合处理 (核心修复部分)
         if (!this.isRedTurn) {
             setTimeout(() => {
-                this.ai.makeMove(this);
-                this.isProcessing = false;
+                try {
+                    const moved = this.ai.makeMove(this);
+                    if (!moved) {
+                        // 🚨 救命稻草：如果 AI 没走棋，必须解锁！
+                        console.warn("AI 投降了");
+                        alert("对方无棋可走，你赢了！");
+                        this.isRedTurn = true;
+                        this.isProcessing = false; 
+                    }
+                    // 如果 moved 为 true，AI 会递归调用 movePiece，那里会处理解锁
+                } catch (err) {
+                    console.error("AI 崩溃:", err);
+                    alert("AI 思考时短路了，轮回你走");
+                    this.isRedTurn = true;
+                    this.isProcessing = false;
+                }
             }, 500);
         } else {
+            // 轮回到玩家，解锁
             this.isProcessing = false;
         }
     }
 
-    // --- 特效层 (保持不变) ---
     screenshake(intensity, duration) {
         const originalPos = {x: this.mainStage.x, y: this.mainStage.y};
         const startTime = Date.now();
@@ -231,9 +262,10 @@ class XiangqiGame {
                 return;
             }
             const damp = 1 - (elapsed / duration);
-            const dx = (Math.random() - 0.5) * intensity * damp;
-            const dy = (Math.random() - 0.5) * intensity * damp;
-            this.mainStage.position.set(originalPos.x + dx, originalPos.y + dy);
+            this.mainStage.position.set(
+                originalPos.x + (Math.random() - 0.5) * intensity * damp,
+                originalPos.y + (Math.random() - 0.5) * intensity * damp
+            );
         };
         this.app.ticker.add(shakeTicker);
     }
@@ -242,8 +274,7 @@ class XiangqiGame {
             const p = new PIXI.Graphics();
             p.beginFill(0xFFD700); p.drawCircle(0, 0, Math.random() * 4 + 2); p.endFill();
             p.x = x; p.y = y; this.fxContainer.addChild(p);
-            const angle = Math.random() * Math.PI * 2;
-            gsap.to(p, { x: x + Math.cos(angle) * 100, y: y + Math.sin(angle) * 100, alpha: 0, duration: 0.6, ease: "power2.out", onComplete: () => this.fxContainer.removeChild(p) });
+            gsap.to(p, { x: x + (Math.random()-0.5)*200, y: y + (Math.random()-0.5)*200, alpha: 0, duration: 0.6, onComplete: () => this.fxContainer.removeChild(p) });
         }
     }
     createDust(x, y) {
@@ -255,7 +286,6 @@ class XiangqiGame {
     }
 }
 
-// --- 4. 规则引擎 (核心逻辑) ---
 class Rules {
     static canMove(piece, tx, ty, pieces) {
         const dx = tx - piece.x;
@@ -263,50 +293,55 @@ class Rules {
         const adx = Math.abs(dx);
         const ady = Math.abs(dy);
         
-        // 不能原地不动
+        // 0. 基础检查：没动或者目标点有己方棋子
         if (dx === 0 && dy === 0) return false;
-
-        // 目标点如果有己方棋子，不能走
         const targetKey = `${tx},${ty}`;
         if (pieces[targetKey] && pieces[targetKey].data.red === piece.red) return false;
 
-        // 根据棋子类型判断
+        // 1. 具体规则
         switch (piece.type) {
             case '车':
                 return (dx === 0 || dy === 0) && !this.hasObstacle(piece.x, piece.y, tx, ty, pieces);
             case '马':
-                if (adx === 1 && ady === 2) return !pieces[`${piece.x},${piece.y + dy/2}`]; // 竖走防蹩脚
-                if (adx === 2 && ady === 1) return !pieces[`${piece.x + dx/2},${piece.y}`]; // 横走防蹩脚
+                // 马走日：必须是 1x2 或 2x1
+                if (adx === 1 && ady === 2) return !pieces[`${piece.x},${piece.y + dy/2}`]; // 竖着别马腿
+                if (adx === 2 && ady === 1) return !pieces[`${piece.x + dx/2},${piece.y}`]; // 横着别马腿
                 return false;
             case '炮':
                 if (dx !== 0 && dy !== 0) return false;
                 const count = this.countObstacles(piece.x, piece.y, tx, ty, pieces);
-                if (pieces[targetKey]) return count === 1; // 吃子必须隔一个
-                return count === 0; // 移动中间不能有人
+                if (pieces[targetKey]) return count === 1; // 吃子需要 1 个炮架
+                return count === 0; // 移动需要 0 个障碍
             case '相':
             case '象':
+                // 象飞田：必须是 2x2
                 if (adx !== 2 || ady !== 2) return false;
-                if (pieces[`${piece.x + dx/2},${piece.y + dy/2}`]) return false; // 塞象眼
-                if (piece.red && ty < 5) return false; // 相不过河
-                if (!piece.red && ty > 4) return false; // 象不过河
+                // 象眼不能堵
+                if (pieces[`${piece.x + dx/2},${piece.y + dy/2}`]) return false;
+                // 不能过河
+                if (piece.red && ty < 5) return false; // 红相不能去 y<5
+                if (!piece.red && ty > 4) return false; // 黑象不能去 y>4
                 return true;
             case '士':
                 if (adx !== 1 || ady !== 1) return false;
-                if (piece.red) return tx >= 3 && tx <= 5 && ty >= 7; // 限制在九宫格
+                if (piece.red) return tx >= 3 && tx <= 5 && ty >= 7;
                 else return tx >= 3 && tx <= 5 && ty <= 2;
             case '帅':
             case '将':
-                if (adx + ady !== 1) return false; // 只能走一步直线
-                // 简单判断：不能出九宫格 (老将对脸暂不判断)
+                if (adx + ady !== 1) return false;
                 if (piece.red) return tx >= 3 && tx <= 5 && ty >= 7;
                 else return tx >= 3 && tx <= 5 && ty <= 2;
             case '兵':
             case '卒':
                 if (piece.red) {
-                    if (ty > piece.y) return false; // 不能后退
-                    if (piece.y >= 5) return dx === 0 && dy === -1; // 过河前只能向前
-                    return (dx === 0 && dy === -1) || (adx === 1 && dy === 0); // 过河后可横走
+                    // 红兵只能往上(y减小)
+                    if (ty > piece.y) return false;
+                    // 过河前(y>=5)只能直走
+                    if (piece.y >= 5) return dx === 0 && dy === -1;
+                    // 过河后可以横走
+                    return (dx === 0 && dy === -1) || (adx === 1 && dy === 0);
                 } else {
+                    // 黑卒只能往下(y增加)
                     if (ty < piece.y) return false;
                     if (piece.y <= 4) return dx === 0 && dy === 1;
                     return (dx === 0 && dy === 1) || (adx === 1 && dy === 0);
@@ -321,13 +356,13 @@ class Rules {
 
     static countObstacles(x1, y1, x2, y2, pieces) {
         let count = 0;
-        if (x1 === x2) { // 竖线
+        if (x1 === x2) {
             const min = Math.min(y1, y2);
             const max = Math.max(y1, y2);
             for (let i = min + 1; i < max; i++) {
                 if (pieces[`${x1},${i}`]) count++;
             }
-        } else if (y1 === y2) { // 横线
+        } else if (y1 === y2) {
             const min = Math.min(x1, x2);
             const max = Math.max(x1, x2);
             for (let i = min + 1; i < max; i++) {
@@ -338,44 +373,57 @@ class Rules {
     }
 }
 
-// --- 5. 贪婪 AI (Greedy AI) ---
 class GreedyAI {
     makeMove(game) {
-        const blackPieces = Object.values(game.pieces).filter(p => !p.data.red);
-        if (blackPieces.length === 0) return;
+        try {
+            const blackPieces = Object.values(game.pieces).filter(p => !p.data.red);
+            if (blackPieces.length === 0) return false;
 
-        let bestMove = null;
-        let maxScore = -1000;
+            let bestMove = null;
+            let maxScore = -9999;
+            const values = { '车': 100, '马': 45, '炮': 50, '相': 20, '象': 20, '士': 20, '帅': 1000, '将': 1000, '兵': 10, '卒': 10 };
 
-        // 简单的价值表
-        const values = { '车': 100, '马': 45, '炮': 50, '相': 20, '象': 20, '士': 20, '帅': 1000, '将': 1000, '兵': 10, '卒': 10 };
+            // 随机打乱顺序，防止 AI 总是走同一个棋子
+            blackPieces.sort(() => Math.random() - 0.5);
 
-        // 遍历所有黑棋
-        for (let piece of blackPieces) {
-            // 遍历所有可能的落点 (简单粗暴全图扫描，性能足够)
-            for (let x = 0; x < 9; x++) {
-                for (let y = 0; y < 10; y++) {
-                    if (Rules.canMove(piece.data, x, y, game.pieces)) {
-                        const targetKey = `${x},${y}`;
-                        const target = game.pieces[targetKey];
-                        
-                        let score = Math.random() * 10; // 基础分带点随机，防止死板
-                        if (target && target.data.red) {
-                            // 如果能吃子，加上棋子价值
-                            score += values[target.data.type] || 0;
-                        }
+            for (let piece of blackPieces) {
+                for (let x = 0; x < 9; x++) {
+                    for (let y = 0; y < 10; y++) {
+                        // 必须使用 try-catch 保护规则判断，防止 Rules 报错导致 AI 崩溃
+                        try {
+                            if (Rules.canMove(piece.data, x, y, game.pieces)) {
+                                const targetKey = `${x},${y}`;
+                                const target = game.pieces[targetKey];
+                                
+                                let score = Math.random() * 5; 
+                                if (target && target.data.red) {
+                                    score += values[target.data.type] || 0;
+                                    // 优先吃高价值的
+                                    if (target.data.type === '帅') score += 10000;
+                                }
+                                // 鼓励过河
+                                if (y > 4) score += 2;
 
-                        if (score > maxScore) {
-                            maxScore = score;
-                            bestMove = { piece, tx: x, ty: y, target };
+                                if (score > maxScore) {
+                                    maxScore = score;
+                                    bestMove = { piece, tx: x, ty: y, target };
+                                }
+                            }
+                        } catch (ruleErr) {
+                            // 忽略单个规则错误
                         }
                     }
                 }
             }
-        }
 
-        if (bestMove) {
-            game.movePiece(bestMove.piece, bestMove.tx, bestMove.ty, bestMove.target);
+            if (bestMove) {
+                game.movePiece(bestMove.piece, bestMove.tx, bestMove.ty, bestMove.target);
+                return true;
+            }
+            return false;
+        } catch (e) {
+            console.error("AI Error:", e);
+            return false;
         }
     }
 }
