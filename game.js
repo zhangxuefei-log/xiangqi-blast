@@ -1,7 +1,6 @@
 /**
- * 爆款象棋 MVP v2.2 (修复点击失效版)
- * 修复：分层导致的点击事件被遮挡问题
- * 包含：防卡死机制 + 规则修正
+ * 爆款象棋 MVP v2.3 (终极输入修复版)
+ * 核心改动：引入 InputLayer (透明交互层)，彻底解决点击穿透和遮挡问题
  */
 
 const CONFIG = {
@@ -33,19 +32,32 @@ class XiangqiGame {
         });
         container.appendChild(this.app.view);
 
-        this.boardContainer = new PIXI.Container();
-        this.piecesContainer = new PIXI.Container();
-        this.fxContainer = new PIXI.Container();
-        
+        // 建立层级结构
         this.mainStage = new PIXI.Container();
-        // 居中舞台
         this.mainStage.x = (CONFIG.width - (8 * CONFIG.gridSize)) / 2;
         this.mainStage.y = (CONFIG.height - (9 * CONFIG.gridSize)) / 2;
-        
         this.app.stage.addChild(this.mainStage);
+
+        // 1. 底层：棋盘
+        this.boardContainer = new PIXI.Container();
         this.mainStage.addChild(this.boardContainer);
+
+        // 2. 中层：棋子
+        this.piecesContainer = new PIXI.Container();
         this.mainStage.addChild(this.piecesContainer);
+
+        // 3. 特效层
+        this.fxContainer = new PIXI.Container();
         this.mainStage.addChild(this.fxContainer);
+
+        // 4. 顶层：交互层 (关键修复：一块透明的玻璃板，专门负责接收点击)
+        this.interactionLayer = new PIXI.Graphics();
+        this.interactionLayer.beginFill(0xFFFFFF, 0.001); // 几乎透明，但必须有填充才能被点击
+        this.interactionLayer.drawRect(-50, -50, 550, 650); // 覆盖整个区域
+        this.interactionLayer.endFill();
+        this.interactionLayer.interactive = true; 
+        this.interactionLayer.buttonMode = true;
+        this.mainStage.addChild(this.interactionLayer);
 
         this.pieces = {}; 
         this.selectedPiece = null;
@@ -54,9 +66,10 @@ class XiangqiGame {
 
         this.drawBoard();
         this.initPieces();
-        this.setupInteraction();
+        this.setupInteraction(); // 绑定事件到 interactionLayer
         
         this.ai = new GreedyAI();
+        console.log("游戏已启动 v2.3");
     }
 
     drawBoard() {
@@ -117,9 +130,7 @@ class XiangqiGame {
             sprite.anchor.set(0.5);
             sprite.x = p.x * CONFIG.gridSize;
             sprite.y = p.y * CONFIG.gridSize;
-            // 关键：开启交互，这样鼠标放上去会变小手
-            sprite.interactive = true;
-            sprite.buttonMode = true;
+            // 注意：这里不再给 sprite 设置 interactive，防止它拦截事件
             sprite.data = { ...p, red: isRed, type: p.name };
             this.piecesContainer.addChild(sprite);
             this.pieces[`${p.x},${p.y}`] = sprite;
@@ -127,21 +138,22 @@ class XiangqiGame {
     }
 
     setupInteraction() {
-        // 🚨 修复核心：将点击事件绑定在 mainStage 上，而不是 boardContainer
-        // 这样无论点到棋子还是点到棋盘，事件都会冒泡上来，被这里捕获
-        this.mainStage.interactive = true;
-        // 设置点击区域覆盖整个棋盘，包括边缘
-        this.mainStage.hitArea = new PIXI.Rectangle(-25, -25, 450, 525);
+        // 所有的点击都由 interactionLayer 处理
+        this.interactionLayer.on('pointerdown', (e) => {
+            // 调试信息：如果你按 F12 看到这个输出，说明点击是生效的
+            console.log("点击触发:", e.data.global);
 
-        this.mainStage.on('pointerdown', (e) => {
-            if (this.isProcessing) return;
+            if (this.isProcessing) {
+                console.log("AI 思考中，点击无效");
+                return;
+            }
             if (!this.isRedTurn) return;
 
-            // 获取相对于棋盘容器的坐标（因为棋盘容器在 mainStage 的 0,0 位置，所以坐标通用）
-            const pos = e.data.getLocalPosition(this.boardContainer);
+            const pos = e.data.getLocalPosition(this.mainStage);
             const gx = Math.round(pos.x / CONFIG.gridSize);
             const gy = Math.round(pos.y / CONFIG.gridSize);
             
+            console.log(`尝试操作格子: ${gx}, ${gy}`);
             this.handleGridClick(gx, gy);
         });
     }
